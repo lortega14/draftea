@@ -40,7 +40,7 @@ const deleteWithdrawal = (t, id) => fetch(`${SUPA_URL}/rest/v1/withdrawals?id=eq
 
 // ─── Profile API (saldo inicial) ─────────────────────────────────────────────
 const fetchProfile = (t) => fetch(`${SUPA_URL}/rest/v1/profiles?select=*`, { headers: { ...hdrs(t), "Prefer": "return=representation" } }).then(r => r.json());
-const upsertProfile = (t, d) => fetch(`${SUPA_URL}/rest/v1/profiles`, { method: "POST", headers: { ...hdrs(t), "Prefer": "return=representation,resolution=merge-duplicates", "on_conflict": "user_id" }, body: JSON.stringify(d) }).then(r => r.json());
+const upsertProfile = (t, d) => fetch(`${SUPA_URL}/rest/v1/profiles?on_conflict=user_id`, { method: "POST", headers: { ...hdrs(t), "Prefer": "return=representation,resolution=merge-duplicates" }, body: JSON.stringify(d) }).then(r => r.json());
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const MXN = n => new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", minimumFractionDigits: 2 }).format(n);
@@ -145,7 +145,7 @@ export default function App() {
     const c = parseFloat(capital), f = parseFloat(final);
     if (!c || !f || isNaN(c) || isNaN(f) || c <= 0) return;
     const profit = f - c, pct = (profit / c) * 100;
-    const payload = { date: todayStr(), capital: c, final: f, profit, pct, note: note.trim() };
+    const payload = { user_id: user.id, date: todayStr(), capital: c, final: f, profit, pct, note: note.trim() };
     setSyncing(true);
     if (editId) {
       const updated = await updateSession(token, editId, payload);
@@ -174,7 +174,7 @@ export default function App() {
     const amt = parseFloat(wAmount);
     if (!amt || isNaN(amt) || amt <= 0) return;
     setSyncing(true);
-    const inserted = await insertWithdrawal(token, { amount: amt, date: todayStr(), note: wNote.trim() });
+    const inserted = await insertWithdrawal(token, { user_id: user.id, amount: amt, date: todayStr(), note: wNote.trim() });
     if (Array.isArray(inserted)) setWithdrawals(prev => [inserted[0], ...prev]);
     setSyncing(false);
     setWAmount(""); setWNote(""); setShowW(false);
