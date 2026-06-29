@@ -86,7 +86,24 @@ export default function App() {
         if (u?.id) {
           setUser(u); setTokenS(t);
           await loadAll(t);
-        } else setToken(null);
+        } else {
+          // Token expirado — intentar refresh
+          const rt = localStorage.getItem("draftea_refresh");
+          if (rt) {
+            const res = await fetch(`${SUPA_URL}/auth/v1/token?grant_type=refresh_token`, {
+              method: "POST", headers: hdrs(),
+              body: JSON.stringify({ refresh_token: rt }),
+            }).then(r => r.json());
+            if (res.access_token) {
+              setToken(res.access_token); setTokenS(res.access_token);
+              if (res.refresh_token) localStorage.setItem("draftea_refresh", res.refresh_token);
+              const u2 = await getUser(res.access_token);
+              setUser(u2); await loadAll(res.access_token);
+            } else {
+              setToken(null); localStorage.removeItem("draftea_refresh");
+            }
+          } else setToken(null);
+        }
       }
       setLoading(false);
     })();
@@ -108,6 +125,8 @@ export default function App() {
     }
     const t = data.access_token;
     setToken(t); setTokenS(t);
+    if (data.refresh_token) localStorage.setItem("draftea_refresh", data.refresh_token);
+    setToken(t); setTokenS(t);
     const u = isSignUp ? data.user : await getUser(t);
     setUser(u);
     await loadAll(t);
@@ -119,6 +138,7 @@ export default function App() {
     await signOut(token);
     setToken(null); setTokenS(null); setUser(null); setSessions([]); setWithdrawals([]); setInitialBal(null); setCapital("");
     showToast("Sesión cerrada");
+    localStorage.removeItem("draftea_refresh");
   };
 
   const handleSave = async () => {
