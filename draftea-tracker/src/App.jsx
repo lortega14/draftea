@@ -219,9 +219,14 @@ export default function App() {
   }
 
   const chronoSessions = [...sessions].reverse();
+  // Cuenta cuántas sesiones hay por fecha para diferenciar la etiqueta del eje X
+  const dateCounts = {};
   const chartData = chronoSessions.reduce((acc, s, i) => {
     const prev = i === 0 ? 0 : acc[i - 1].acum;
-    acc.push({ date: shortDate(s.date), acum: +(prev + s.profit).toFixed(2), profit: +s.profit.toFixed(2) });
+    const baseDate = shortDate(s.date);
+    dateCounts[baseDate] = (dateCounts[baseDate] || 0) + 1;
+    const label = dateCounts[baseDate] > 1 ? `${baseDate} #${dateCounts[baseDate]}` : baseDate;
+    acc.push({ id: s.id, date: label, fullDate: s.date, acum: +(prev + s.profit).toFixed(2), profit: +s.profit.toFixed(2) });
     return acc;
   }, []);
 
@@ -634,7 +639,7 @@ function ChartsView({ chartData, sessions, stats }) {
             <Tooltip content={<BarTooltip />} />
             <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
             <Bar dataKey="profit" radius={[4, 4, 0, 0]} maxBarSize={40}>
-              {chartData.map((d, i) => <Cell key={i} fill={d.profit >= 0 ? G : R} fillOpacity={0.8} />)}
+              {chartData.map((d) => <Cell key={d.id} fill={d.profit >= 0 ? G : R} fillOpacity={0.8} />)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -689,12 +694,14 @@ function Toast({ toast }) {
 function LineTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   const v = payload[0].value;
-  return <div className="chart-tooltip"><p className="tt-label">{label}</p><p className="tt-value" style={{ background: "linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{v >= 0 ? "+" : ""}{MXN(v)}</p></div>;
+  const fullDate = payload[0].payload?.fullDate || label;
+  return <div className="chart-tooltip"><p className="tt-label">{fullDate}</p><p className="tt-value" style={{ background: "linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{v >= 0 ? "+" : ""}{MXN(v)}</p></div>;
 }
 function BarTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   const v = payload[0].value;
-  return <div className="chart-tooltip"><p className="tt-label">{label}</p><p className="tt-value" style={{ color: pc(v) }}>{v >= 0 ? "+" : ""}{MXN(v)}</p></div>;
+  const fullDate = payload[0].payload?.fullDate || label;
+  return <div className="chart-tooltip"><p className="tt-label">{fullDate}</p><p className="tt-value" style={{ color: pc(v) }}>{v >= 0 ? "+" : ""}{MXN(v)}</p></div>;
 }
 
 const GLOBAL_CSS = `
