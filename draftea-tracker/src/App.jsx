@@ -38,6 +38,11 @@ const fetchWithdrawals = (t) => fetch(`${SUPA_URL}/rest/v1/withdrawals?select=*&
 const insertWithdrawal = (t, d) => fetch(`${SUPA_URL}/rest/v1/withdrawals`, { method: "POST", headers: { ...hdrs(t), "Prefer": "return=representation" }, body: JSON.stringify(d) }).then(r => r.json());
 const deleteWithdrawal = (t, id) => fetch(`${SUPA_URL}/rest/v1/withdrawals?id=eq.${id}`, { method: "DELETE", headers: hdrs(t) });
 
+// ─── Deposits API ────────────────────────────────────────────────────────────
+const fetchDeposits = (t) => fetch(`${SUPA_URL}/rest/v1/deposits?select=*&order=created_at.desc`, { headers: { ...hdrs(t), "Prefer": "return=representation" } }).then(r => r.json());
+const insertDeposit = (t, d) => fetch(`${SUPA_URL}/rest/v1/deposits`, { method: "POST", headers: { ...hdrs(t), "Prefer": "return=representation" }, body: JSON.stringify(d) }).then(r => r.json());
+const deleteDeposit = (t, id) => fetch(`${SUPA_URL}/rest/v1/deposits?id=eq.${id}`, { method: "DELETE", headers: hdrs(t) });
+
 // ─── Profile API (saldo inicial) ─────────────────────────────────────────────
 const fetchProfile = (t) => fetch(`${SUPA_URL}/rest/v1/profiles?select=*`, { headers: { ...hdrs(t), "Prefer": "return=representation" } }).then(r => r.json());
 const upsertProfile = (t, d) => fetch(`${SUPA_URL}/rest/v1/profiles?on_conflict=user_id`, { method: "POST", headers: { ...hdrs(t), "Prefer": "return=representation,resolution=merge-duplicates" }, body: JSON.stringify(d) }).then(r => r.json());
@@ -70,10 +75,14 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [deposits, setDeposits] = useState([]);
   const [showW, setShowW] = useState(false); // modal retiro
+  const [showD, setShowD] = useState(false); // modal depósito
   const [showIB, setShowIB] = useState(false); // modal saldo inicial
   const [wAmount, setWAmount] = useState("");
   const [wNote, setWNote] = useState("");
+  const [dAmount, setDAmount] = useState("");
+  const [dNote, setDNote] = useState("");
   const [ibAmount, setIbAmount] = useState("");
 
   const showToast = (msg, err = false) => { setToast({ msg, err }); setTimeout(() => setToast(null), 2600); };
@@ -111,9 +120,10 @@ export default function App() {
 
   const loadAll = async (t) => {
     setSyncing(true);
-    const [s, w, p] = await Promise.all([fetchSessions(t), fetchWithdrawals(t), fetchProfile(t)]);
+    const [s, w, d, p] = await Promise.all([fetchSessions(t), fetchWithdrawals(t), fetchDeposits(t), fetchProfile(t)]);
     if (Array.isArray(s)) { setSessions(s); if (s.length > 0) setCapital(String(s[0].final)); }
     if (Array.isArray(w)) setWithdrawals(w);
+    if (Array.isArray(d)) setDeposits(d);
     if (Array.isArray(p) && p.length > 0) setInitialBal(p[0].initial_balance);
     setSyncing(false);
   };
@@ -136,7 +146,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await signOut(token);
-    setToken(null); setTokenS(null); setUser(null); setSessions([]); setWithdrawals([]); setInitialBal(null); setCapital("");
+    setToken(null); setTokenS(null); setUser(null); setSessions([]); setWithdrawals([]); setDeposits([]); setInitialBal(null); setCapital("");
     showToast("Sesión cerrada");
     localStorage.removeItem("draftea_refresh");
   };
@@ -187,6 +197,23 @@ export default function App() {
     showToast("Retiro eliminado");
   };
 
+  const handleDeposit = async () => {
+    const amt = parseFloat(dAmount);
+    if (!amt || isNaN(amt) || amt <= 0) return;
+    setSyncing(true);
+    const inserted = await insertDeposit(token, { user_id: user.id, amount: amt, date: todayStr(), note: dNote.trim() });
+    if (Array.isArray(inserted)) setDeposits(prev => [inserted[0], ...prev]);
+    setSyncing(false);
+    setDAmount(""); setDNote(""); setShowD(false);
+    showToast("Depósito registrado · " + MXN(amt));
+  };
+
+  const handleDeleteDeposit = async (id) => {
+    await deleteDeposit(token, id);
+    setDeposits(prev => prev.filter(d => d.id !== id));
+    showToast("Depósito eliminado");
+  };
+
   const handleSetInitialBalance = async () => {
     const amt = parseFloat(ibAmount);
     if (!amt || isNaN(amt) || amt <= 0) return;
@@ -199,9 +226,11 @@ export default function App() {
 
   // ── Derived numbers ──
   const totalWithdrawn = withdrawals.reduce((a, b) => a + b.amount, 0);
+  const totalDeposited = deposits.reduce((a, b) => a + b.amount, 0);
   const currentBalance = sessions.length > 0 ? sessions[0].final : 0;
+  // Ganancia neta = saldo actual + retirado - depositado - saldo inicial
   const netProfit = initialBal != null
-    ? (currentBalance + totalWithdrawn) - initialBal
+    ? (currentBalance + totalWithdrawn) - totalDeposited - initialBal
     : null;
 
   // Session stats
@@ -219,13 +248,12 @@ export default function App() {
   }
 
   const chronoSessions = [...sessions].reverse();
-  // Cuenta cuántas sesiones hay por fecha para diferenciar la etiqueta del eje X
   const dateCounts = {};
   const chartData = chronoSessions.reduce((acc, s, i) => {
     const prev = i === 0 ? 0 : acc[i - 1].acum;
     const baseDate = shortDate(s.date);
     dateCounts[baseDate] = (dateCounts[baseDate] || 0) + 1;
-    const label = dateCounts[baseDate] > 1 ? `${baseDate} #${dateCounts[baseDate]}` : baseDate;
+    const label = dateCounts[baseDate] > 1 ? `${baseDate}#${dateCounts[baseDate]}` : baseDate;
     acc.push({ id: s.id, date: label, fullDate: s.date, acum: +(prev + s.profit).toFixed(2), profit: +s.profit.toFixed(2) });
     return acc;
   }, []);
@@ -280,6 +308,32 @@ export default function App() {
         </div>
       )}
 
+      {/* Modal depósito */}
+      {showD && (
+        <div className="modal-overlay" onClick={() => setShowD(false)}>
+          <div className="modal-card glass-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-icon" style={{ background: "rgba(52,211,153,0.12)", borderColor: "rgba(52,211,153,0.25)" }}>
+                <PlusCircle size={18} color={G} strokeWidth={2} />
+              </div>
+              <div><p className="modal-title">Registrar depósito</p><p className="modal-sub">Dinero añadido a Draftea</p></div>
+              <button className="modal-close" onClick={() => setShowD(false)}><X size={16} /></button>
+            </div>
+            <div className="field-wrap" style={{ marginBottom: 12 }}>
+              <label className="field-lbl"><DollarSign size={10} /> Monto depositado (MXN)</label>
+              <input type="number" value={dAmount} onChange={e => setDAmount(e.target.value)} placeholder="0.00" className="num-input" inputMode="decimal" autoFocus />
+            </div>
+            <div className="field-wrap" style={{ marginBottom: 16 }}>
+              <label className="field-lbl"><AlignLeft size={10} /> Nota (opcional)</label>
+              <input type="text" value={dNote} onChange={e => setDNote(e.target.value)} placeholder="ej. recarga quincenal" className="text-input" />
+            </div>
+            <button className="save-btn" style={{ background: "linear-gradient(135deg,#059669,#34d399)" }} onClick={handleDeposit}>
+              <PlusCircle size={15} /> Confirmar depósito
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Modal saldo inicial */}
       {showIB && (
         <div className="modal-overlay" onClick={() => setShowIB(false)}>
@@ -326,6 +380,10 @@ export default function App() {
                 <span className="bal-val" style={{ color: G }}>{currentBalance > 0 ? MXN(currentBalance) : "—"}</span>
               </div>
               <div className="bal-row">
+                <span className="bal-label">Depositado</span>
+                <span className="bal-val" style={{ color: G }}>{totalDeposited > 0 ? MXN(totalDeposited) : "—"}</span>
+              </div>
+              <div className="bal-row">
                 <span className="bal-label">Retirado</span>
                 <span className="bal-val" style={{ color: R }}>{totalWithdrawn > 0 ? MXN(totalWithdrawn) : "—"}</span>
               </div>
@@ -338,7 +396,10 @@ export default function App() {
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button className="action-btn" onClick={() => setShowIB(true)} title="Saldo inicial">
-                <Wallet size={13} />{initialBal == null ? "Saldo inicial" : "Editar inicial"}
+                <Wallet size={13} />{initialBal == null ? "Inicial" : "Editar inicial"}
+              </button>
+              <button className="action-btn" style={{}} onClick={() => setShowD(true)} title="Depósito">
+                <PlusCircle size={13} />Depósito
               </button>
               <button className="action-btn danger" onClick={() => setShowW(true)} title="Registrar retiro">
                 <ArrowDownLeft size={13} />Retiro
@@ -359,24 +420,26 @@ export default function App() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button className="mh-action" onClick={() => setShowIB(true)} title="Saldo inicial"><Wallet size={15} /></button>
+              <button className="mh-action green" onClick={() => setShowD(true)} title="Depósito"><PlusCircle size={15} /></button>
               <button className="mh-action red" onClick={() => setShowW(true)} title="Retiro"><ArrowDownLeft size={15} /></button>
               <button className="mh-logout" onClick={handleLogout}><LogOut size={14} strokeWidth={2} /></button>
             </div>
           </header>
 
           {/* Balance bar — mobile */}
-          {(currentBalance > 0 || totalWithdrawn > 0 || netProfit != null) && (
+          {(currentBalance > 0 || totalWithdrawn > 0 || totalDeposited > 0 || netProfit != null) && (
             <div className="balance-bar">
               <BalPill label="Saldo" value={MXN(currentBalance)} color={G} />
+              {totalDeposited > 0 && <BalPill label="Depositado" value={MXN(totalDeposited)} color={G} />}
               <BalPill label="Retirado" value={MXN(totalWithdrawn)} color={R} />
               {netProfit != null && <BalPill label="Ganancia neta" value={(netProfit >= 0 ? "+" : "") + MXN(netProfit)} color={pc(netProfit)} />}
             </div>
           )}
 
           <main className="content-area">
-            {view === "session" && <SessionView capital={capital} setCapital={setCapital} final={final} setFinal={setFinal} note={note} setNote={setNote} preview={preview} last={last} onSave={handleSave} flash={flash} editId={editId} onCancelEdit={() => { setEditId(null); setFinal(""); setNote(""); }} stats={{ wins, losses, totalP, avgP, wr, best, worst, streak, sType }} onWithdraw={() => setShowW(true)} onSetInitial={() => setShowIB(true)} initialBal={initialBal} />}
-            {view === "history" && <HistoryView sessions={sessions} withdrawals={withdrawals} onDelete={handleDelete} onEdit={handleEdit} onDeleteWithdrawal={handleDeleteWithdrawal} />}
-            {view === "charts" && <ChartsView chartData={chartData} sessions={sessions} stats={{ totalP, avgP, wr, wins, losses, totalWithdrawn, netProfit, currentBalance }} />}
+            {view === "session" && <SessionView capital={capital} setCapital={setCapital} final={final} setFinal={setFinal} note={note} setNote={setNote} preview={preview} last={last} onSave={handleSave} flash={flash} editId={editId} onCancelEdit={() => { setEditId(null); setFinal(""); setNote(""); }} stats={{ wins, losses, totalP, avgP, wr, best, worst, streak, sType }} onWithdraw={() => setShowW(true)} onDeposit={() => setShowD(true)} onSetInitial={() => setShowIB(true)} initialBal={initialBal} />}
+            {view === "history" && <HistoryView sessions={sessions} withdrawals={withdrawals} deposits={deposits} onDelete={handleDelete} onEdit={handleEdit} onDeleteWithdrawal={handleDeleteWithdrawal} onDeleteDeposit={handleDeleteDeposit} />}
+            {view === "charts" && <ChartsView chartData={chartData} sessions={sessions} stats={{ totalP, avgP, wr, wins, losses, totalWithdrawn, totalDeposited, netProfit, currentBalance }} />}
           </main>
 
           <nav className="mobile-nav">
@@ -447,7 +510,7 @@ function AuthScreen({ onAuth }) {
 }
 
 // ─── Session View ─────────────────────────────────────────────────────────────
-function SessionView({ capital, setCapital, final, setFinal, note, setNote, preview, last, onSave, flash, editId, onCancelEdit, stats, onWithdraw, onSetInitial, initialBal }) {
+function SessionView({ capital, setCapital, final, setFinal, note, setNote, preview, last, onSave, flash, editId, onCancelEdit, stats, onWithdraw, onDeposit, onSetInitial, initialBal }) {
   const { wins, losses, totalP, avgP, wr, best, worst, streak, sType } = stats;
   return (
     <div className="view">
@@ -470,10 +533,13 @@ function SessionView({ capital, setCapital, final, setFinal, note, setNote, prev
       {/* Quick actions */}
       <div className="quick-actions">
         <button className="qa-btn" onClick={onSetInitial}>
-          <Wallet size={14} color={P} /> {initialBal != null ? `Inicial: ${MXN(initialBal)}` : "Definir saldo inicial"}
+          <Wallet size={14} color={P} /> {initialBal != null ? `Inicial: ${MXN(initialBal)}` : "Definir inicial"}
+        </button>
+        <button className="qa-btn qa-green" onClick={onDeposit}>
+          <PlusCircle size={14} color={G} /> Depósito
         </button>
         <button className="qa-btn qa-red" onClick={onWithdraw}>
-          <ArrowDownLeft size={14} color={R} /> Registrar retiro
+          <ArrowDownLeft size={14} color={R} /> Retiro
         </button>
       </div>
 
@@ -529,13 +595,16 @@ function SessionView({ capital, setCapital, final, setFinal, note, setNote, prev
 }
 
 // ─── History View ─────────────────────────────────────────────────────────────
-function HistoryView({ sessions, withdrawals, onDelete, onEdit, onDeleteWithdrawal }) {
+function HistoryView({ sessions, withdrawals, deposits, onDelete, onEdit, onDeleteWithdrawal, onDeleteDeposit }) {
   const [tab, setTab] = useState("sessions");
   return (
     <div className="view">
       <div className="history-tabs">
         <button className={`htab ${tab === "sessions" ? "htab-active" : ""}`} onClick={() => setTab("sessions")}>
           <Zap size={13} /> Sesiones {sessions.length > 0 && <span className="snav-badge">{sessions.length}</span>}
+        </button>
+        <button className={`htab ${tab === "deposits" ? "htab-active" : ""}`} onClick={() => setTab("deposits")}>
+          <PlusCircle size={13} /> Depósitos {deposits.length > 0 && <span className="snav-badge" style={{ background: "rgba(52,211,153,0.2)", color: "#34d399" }}>{deposits.length}</span>}
         </button>
         <button className={`htab ${tab === "withdrawals" ? "htab-active" : ""}`} onClick={() => setTab("withdrawals")}>
           <ArrowDownLeft size={13} /> Retiros {withdrawals.length > 0 && <span className="snav-badge" style={{ background: "rgba(251,113,133,0.2)", color: "#fb7185" }}>{withdrawals.length}</span>}
@@ -559,6 +628,26 @@ function HistoryView({ sessions, withdrawals, onDelete, onEdit, onDeleteWithdraw
             <div className="hr-actions">
               <button className="icon-btn" onClick={() => onEdit(s)}><Pencil size={14} strokeWidth={2} /></button>
               <button className="icon-btn danger" onClick={() => onDelete(s.id)}><Trash2 size={14} strokeWidth={2} /></button>
+            </div>
+          </div>
+        ))
+      )}
+
+      {tab === "deposits" && (
+        deposits.length === 0 ? (
+          <div className="glass-card empty-card"><PlusCircle size={32} color={MUTED} strokeWidth={1.5} /><p className="empty-title">Sin depósitos</p><p className="empty-sub">Registra un depósito desde la pestaña Sesión.</p></div>
+        ) : deposits.map(d => (
+          <div key={d.id} className="glass-card history-row" style={{ borderColor: "rgba(52,211,153,0.2)" }}>
+            <div className="hr-icon" style={{ background: "rgba(52,211,153,0.1)", borderColor: "rgba(52,211,153,0.25)" }}>
+              <PlusCircle size={16} color={G} strokeWidth={2} />
+            </div>
+            <div className="hr-body">
+              <p className="label-xs">{d.date}</p>
+              <p className="hr-amount" style={{ color: G }}>+{MXN(d.amount)}</p>
+              {d.note && <p className="hr-note">"{d.note}"</p>}
+            </div>
+            <div className="hr-actions">
+              <button className="icon-btn danger" onClick={() => onDeleteDeposit(d.id)}><Trash2 size={14} strokeWidth={2} /></button>
             </div>
           </div>
         ))
@@ -589,7 +678,7 @@ function HistoryView({ sessions, withdrawals, onDelete, onEdit, onDeleteWithdraw
 
 // ─── Charts View ──────────────────────────────────────────────────────────────
 function ChartsView({ chartData, sessions, stats }) {
-  const { totalP, avgP, wr, wins, losses, totalWithdrawn, netProfit, currentBalance } = stats;
+  const { totalP, avgP, wr, wins, losses, totalWithdrawn, totalDeposited, netProfit, currentBalance } = stats;
   if (sessions.length === 0) return (
     <div className="view"><div className="glass-card empty-card"><BarChart2 size={32} color={MUTED} strokeWidth={1.5} /><p className="empty-title">Sin datos</p><p className="empty-sub">Necesitas al menos una sesión para ver gráficas.</p></div></div>
   );
@@ -598,8 +687,8 @@ function ChartsView({ chartData, sessions, stats }) {
       <p className="section-eyebrow">Resumen financiero</p>
       <div className="kpi-row kpi-row-2">
         <KPIPill label="Saldo actual" value={MXN(currentBalance)} color={G} />
-        <KPIPill label="Total retirado" value={MXN(totalWithdrawn)} color={R} />
-        <KPIPill label="Win rate" value={`${wr.toFixed(0)}%`} color={wr >= 50 ? G : R} />
+        <KPIPill label="Depositado" value={MXN(totalDeposited)} color={B} />
+        <KPIPill label="Retirado" value={MXN(totalWithdrawn)} color={R} />
         <KPIPill label="Ganancia neta" value={netProfit != null ? (netProfit >= 0 ? "+" : "") + MXN(netProfit) : "—"} color={netProfit != null ? pc(netProfit) : MUTED} />
       </div>
       <div className="glass-card chart-card">
@@ -750,6 +839,7 @@ body{background:#07090f;color:#f8fafc;font-family:'Inter',system-ui,sans-serif;o
 .mh-action{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 8px;color:#64748b;cursor:pointer;display:flex;align-items:center;transition:all 0.15s}
 .mh-action:hover{color:#c084fc;border-color:rgba(168,85,247,0.3)}
 .mh-action.red:hover{color:#fb7185;border-color:rgba(251,113,133,0.3)}
+.mh-action.green:hover{color:#34d399;border-color:rgba(52,211,153,0.3)}
 .mh-logout{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 8px;color:#64748b;cursor:pointer;display:flex;align-items:center;transition:all 0.15s}
 .mh-logout:hover{color:#fb7185}
 .balance-bar{display:flex;gap:0;border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(7,9,15,0.5);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);overflow-x:auto}
@@ -775,6 +865,8 @@ body{background:#07090f;color:#f8fafc;font-family:'Inter',system-ui,sans-serif;o
 .quick-actions{display:flex;gap:8px}
 .qa-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;color:#c084fc;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:all 0.15s}
 .qa-btn:hover{background:rgba(168,85,247,0.15)}
+.qa-green{background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2);color:#34d399}
+.qa-green:hover{background:rgba(52,211,153,0.15)}
 .qa-red{background:rgba(251,113,133,0.08);border-color:rgba(251,113,133,0.2);color:#fb7185}
 .qa-red:hover{background:rgba(251,113,133,0.15)}
 .input-card-wrap{position:relative}
