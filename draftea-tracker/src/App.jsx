@@ -205,6 +205,7 @@ export default function App() {
     if (Array.isArray(inserted)) setDeposits(prev => [inserted[0], ...prev]);
     setSyncing(false);
     setDAmount(""); setDNote(""); setShowD(false);
+    setCapital(prev => String((parseFloat(prev) || 0) + amt));
     showToast("Depósito registrado · " + MXN(amt));
   };
 
@@ -227,7 +228,7 @@ export default function App() {
   // ── Derived numbers ──
   const totalWithdrawn = withdrawals.reduce((a, b) => a + b.amount, 0);
   const totalDeposited = deposits.reduce((a, b) => a + b.amount, 0);
-  const currentBalance = sessions.length > 0 ? sessions[0].final : 0;
+  const currentBalance = sessions.length > 0 ? sessions[0].final + totalDeposited : totalDeposited;
   // Ganancia neta = saldo actual + retirado - depositado - saldo inicial
   const netProfit = initialBal != null
     ? (currentBalance + totalWithdrawn) - totalDeposited - initialBal
