@@ -4,7 +4,8 @@ import {
   CheckCircle2, Pencil, Trash2, ArrowUpRight,
   Target, Award, Activity, Minus, X, ChevronUp,
   AlignLeft, LogOut, Mail, Lock, Eye, EyeOff, User,
-  ArrowDownLeft, Wallet, PlusCircle, DollarSign, Flag
+  ArrowDownLeft, Wallet, PlusCircle, DollarSign, Flag,
+  Sun, Moon
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
@@ -57,6 +58,14 @@ export default function App() {
   const [user,        setUser]        = useState(null);
   const [token,       setTokenS]      = useState(null);
   const [sessions,    setSessions]    = useState([]);
+  const [theme,       setTheme]       = useState(() => localStorage.getItem("draftea_theme") || "dark");
+
+  useEffect(() => {
+    localStorage.setItem("draftea_theme", theme);
+    document.body.className = `theme-${theme}`;
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(prev => prev === "light" ? "dark" : "light");
   const [withdrawals, setWithdrawals] = useState([]);
   const [deposits,    setDeposits]    = useState([]);
   const [initialBal,  setInitialBal]  = useState(null);
@@ -112,10 +121,28 @@ export default function App() {
   const loadAll = async (t) => {
     setSyncing(true);
     const [s,w,d,p] = await Promise.all([fetchSessions(t),fetchWithdrawals(t),fetchDeposits(t),fetchProfile(t)]);
-    if (Array.isArray(s)) { setSessions(s); if(s.length>0) setCapital(String(s[0].final)); }
-    if (Array.isArray(w)) setWithdrawals(w);
-    if (Array.isArray(d)) setDeposits(d);
+    const validSessions = Array.isArray(s) ? s : [];
+    const validWithdrawals = Array.isArray(w) ? w : [];
+    const validDeposits = Array.isArray(d) ? d : [];
+    setSessions(validSessions);
+    setWithdrawals(validWithdrawals);
+    setDeposits(validDeposits);
     if (Array.isArray(p)&&p.length>0) setInitialBal(p[0].initial_balance);
+
+    if (validSessions.length > 0) {
+      const lastSessionTime = new Date(validSessions[0].created_at).getTime();
+      const postSessionDeposits = validDeposits
+        .filter(x => new Date(x.created_at).getTime() > lastSessionTime)
+        .reduce((a,b)=>a+b.amount, 0);
+      const postSessionWithdrawals = validWithdrawals
+        .filter(x => new Date(x.created_at).getTime() > lastSessionTime)
+        .reduce((a,b)=>a+b.amount, 0);
+      setCapital(String(validSessions[0].final + postSessionDeposits - postSessionWithdrawals));
+    } else {
+      const totalDep = validDeposits.reduce((a,b)=>a+b.amount, 0);
+      const totalWith = validWithdrawals.reduce((a,b)=>a+b.amount, 0);
+      setCapital(String(totalDep - totalWith));
+    }
     setSyncing(false);
   };
 
@@ -166,9 +193,16 @@ export default function App() {
     const inserted = await insertWithdrawal(token,{user_id:user.id,amount:amt,date:todayStr(),note:wNote.trim()});
     if (Array.isArray(inserted)) setWithdrawals(prev=>[inserted[0],...prev]);
     setSyncing(false); setWAmount(""); setWNote(""); setShowW(false);
+    setCapital(prev=>String((parseFloat(prev)||0)-amt));
     showToast("Retiro registrado · "+MXN(amt));
   };
-  const handleDeleteWithdrawal = async (id) => { await deleteWithdrawal(token,id); setWithdrawals(prev=>prev.filter(w=>w.id!==id)); showToast("Retiro eliminado"); };
+  const handleDeleteWithdrawal = async (id) => {
+    const w = withdrawals.find(x => x.id === id);
+    await deleteWithdrawal(token,id);
+    setWithdrawals(prev=>prev.filter(w=>w.id!==id));
+    if (w) setCapital(prev=>String((parseFloat(prev)||0)+w.amount));
+    showToast("Retiro eliminado");
+  };
 
   const handleDeposit = async () => {
     const amt=parseFloat(dAmount); if(!amt||isNaN(amt)||amt<=0) return;
@@ -179,7 +213,13 @@ export default function App() {
     setCapital(prev=>String((parseFloat(prev)||0)+amt));
     showToast("Depósito registrado · "+MXN(amt));
   };
-  const handleDeleteDeposit = async (id) => { await deleteDeposit(token,id); setDeposits(prev=>prev.filter(d=>d.id!==id)); showToast("Depósito eliminado"); };
+  const handleDeleteDeposit = async (id) => {
+    const d = deposits.find(x => x.id === id);
+    await deleteDeposit(token,id);
+    setDeposits(prev=>prev.filter(d=>d.id!==id));
+    if (d) setCapital(prev=>String((parseFloat(prev)||0)-d.amount));
+    showToast("Depósito eliminado");
+  };
 
   const handleSetInitialBalance = async () => {
     const amt=parseFloat(ibAmount); if(!amt||isNaN(amt)||amt<=0) return;
@@ -197,7 +237,17 @@ export default function App() {
 
   const totalWithdrawn = withdrawals.reduce((a,b)=>a+b.amount,0);
   const totalDeposited = deposits.reduce((a,b)=>a+b.amount,0);
-  const currentBalance = sessions.length>0 ? sessions[0].final+totalDeposited : totalDeposited;
+  const lastSession = sessions[0];
+  const lastSessionTime = lastSession ? new Date(lastSession.created_at).getTime() : 0;
+  const postSessionDeposited = lastSession
+    ? deposits.filter(d => new Date(d.created_at).getTime() > lastSessionTime).reduce((a,b)=>a+b.amount,0)
+    : totalDeposited;
+  const postSessionWithdrawn = lastSession
+    ? withdrawals.filter(w => new Date(w.created_at).getTime() > lastSessionTime).reduce((a,b)=>a+b.amount,0)
+    : totalWithdrawn;
+  const currentBalance = lastSession
+    ? lastSession.final + postSessionDeposited - postSessionWithdrawn
+    : postSessionDeposited - postSessionWithdrawn;
   const netProfit = initialBal!=null ? (currentBalance+totalWithdrawn)-totalDeposited-initialBal : null;
 
   const wins   = sessions.filter(s=>s.profit>0);
@@ -238,24 +288,24 @@ export default function App() {
   const goalProgress = goal&&currentBalance>0 ? Math.min((currentBalance/goal)*100,100) : 0;
 
   if (loading) return (
-    <div style={{minHeight:"100vh",background:"#07090f",display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div className={`theme-${theme}`} style={{minHeight:"100vh",background:"var(--bg-app)",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div className="spinner"/>
-      <style>{`${GLOBAL_CSS}.spinner{width:32px;height:32px;border:2px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 0.8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 
   if (!user) return (
-    <><style>{GLOBAL_CSS}</style>
-    <div className="mesh-bg"><div className="mesh-orb mesh-orb-1"/><div className="mesh-orb mesh-orb-2"/><div className="mesh-orb mesh-orb-3"/></div>
-    {toast&&<Toast toast={toast}/>}
-    <AuthScreen onAuth={handleAuth}/></>
+    <div className={`theme-${theme}`}>
+      <div className="mesh-bg"><div className="mesh-orb mesh-orb-1"/><div className="mesh-orb mesh-orb-2"/><div className="mesh-orb mesh-orb-3"/></div>
+      {toast&&<Toast toast={toast}/>}
+      <AuthScreen onAuth={handleAuth} theme={theme} toggleTheme={toggleTheme}/>
+    </div>
   );
 
   return (
-    <><style>{GLOBAL_CSS}</style>
-    <div className="mesh-bg"><div className="mesh-orb mesh-orb-1"/><div className="mesh-orb mesh-orb-2"/><div className="mesh-orb mesh-orb-3"/></div>
-    {toast&&<Toast toast={toast}/>}
-    {syncing&&<div className="sync-bar"/>}
+    <div className={`layout theme-${theme}`}>
+      <div className="mesh-bg"><div className="mesh-orb mesh-orb-1"/><div className="mesh-orb mesh-orb-2"/><div className="mesh-orb mesh-orb-3"/></div>
+      {toast&&<Toast toast={toast}/>}
+      {syncing&&<div className="sync-bar"/>}
 
     {/* Modal retiro */}
     {showW&&(
@@ -340,7 +390,6 @@ export default function App() {
       </div>
     )}
 
-    <div className="layout">
       <aside className="sidebar">
         <div className="sidebar-logo">
           <div className="logo-mark"><Activity size={16} strokeWidth={2.5}/></div>
@@ -365,15 +414,15 @@ export default function App() {
           {goal!=null&&(
             <div className="sidebar-goal">
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
-                <span style={{fontSize:10,color:MUTED,letterSpacing:1,textTransform:"uppercase"}}>Meta</span>
-                <span style={{fontSize:10,color:B,fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{goalProgress.toFixed(0)}%</span>
+                <span style={{fontSize:10,color:"var(--text-secondary)",letterSpacing:1,textTransform:"uppercase"}}>Meta</span>
+                <span style={{fontSize:10,color:"var(--color-blue)",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{goalProgress.toFixed(0)}%</span>
               </div>
               <div className="goal-bar-track">
-                <div className="goal-bar-fill" style={{width:`${goalProgress}%`,background:goalProgress>=100?G:`linear-gradient(90deg,${B},${C})`}}/>
+                <div className="goal-bar-fill" style={{width:`${goalProgress}%`,background:goalProgress>=100?"var(--color-green)":`linear-gradient(90deg,var(--color-blue),var(--color-cyan))`}}/>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",marginTop:5}}>
-                <span style={{fontSize:10,color:MUTED,fontFamily:"'JetBrains Mono',monospace"}}>{MXN(currentBalance)}</span>
-                <span style={{fontSize:10,color:"#334155",fontFamily:"'JetBrains Mono',monospace"}}>{MXN(goal)}</span>
+                <span style={{fontSize:10,color:"var(--text-muted)",fontFamily:"'JetBrains Mono',monospace"}}>{MXN(currentBalance)}</span>
+                <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"'JetBrains Mono',monospace"}}>{MXN(goal)}</span>
               </div>
             </div>
           )}
@@ -383,7 +432,16 @@ export default function App() {
             <button className="action-btn" onClick={()=>setShowD(true)}><PlusCircle size={13}/>Depósito</button>
             <button className="action-btn danger" onClick={()=>setShowW(true)}><ArrowDownLeft size={13}/>Retiro</button>
           </div>
-          <button className="logout-btn" onClick={handleLogout}><LogOut size={13} strokeWidth={2}/> Cerrar sesión</button>
+          <div className="footer-row">
+            <button className="theme-toggle-btn" onClick={toggleTheme} title="Cambiar tema">
+              {theme === "light" ? <Moon size={14} /> : <Sun size={14} />}
+              <span>{theme === "light" ? "Oscuro" : "Claro"}</span>
+            </button>
+            <button className="logout-btn" onClick={handleLogout} title="Cerrar sesión">
+              <LogOut size={14} strokeWidth={2} />
+              <span>Salir</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -394,11 +452,14 @@ export default function App() {
             <span className="mh-title">Draftea</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button className="mh-action" onClick={toggleTheme} title="Tema">
+              {theme === "light" ? <Moon size={15}/> : <Sun size={15}/>}
+            </button>
             <button className="mh-action" onClick={()=>setShowGoal(true)} title="Meta"><Flag size={15}/></button>
             <button className="mh-action" onClick={()=>setShowIB(true)} title="Saldo inicial"><Wallet size={15}/></button>
             <button className="mh-action green" onClick={()=>setShowD(true)} title="Depósito"><PlusCircle size={15}/></button>
             <button className="mh-action red" onClick={()=>setShowW(true)} title="Retiro"><ArrowDownLeft size={15}/></button>
-            <button className="mh-logout" onClick={handleLogout}><LogOut size={14} strokeWidth={2}/></button>
+            <button className="mh-action red" onClick={handleLogout} title="Cerrar sesión"><LogOut size={14} strokeWidth={2}/></button>
           </div>
         </header>
 
@@ -406,11 +467,11 @@ export default function App() {
         {goal!=null&&(
           <div className="goal-mobile-bar">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,padding:"0 16px"}}>
-              <span style={{fontSize:9,color:MUTED,letterSpacing:1.5,textTransform:"uppercase"}}>Meta de bankroll</span>
-              <span style={{fontSize:10,color:goalProgress>=100?G:B,fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{MXN(currentBalance)} / {MXN(goal)} · {goalProgress.toFixed(0)}%</span>
+              <span style={{fontSize:9,color:"var(--text-secondary)",letterSpacing:1.5,textTransform:"uppercase"}}>Meta de bankroll</span>
+              <span style={{fontSize:10,color:goalProgress>=100?"var(--color-green)":"var(--color-blue)",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{MXN(currentBalance)} / {MXN(goal)} · {goalProgress.toFixed(0)}%</span>
             </div>
-            <div style={{height:3,background:"rgba(255,255,255,0.06)"}}>
-              <div style={{height:"100%",width:`${goalProgress}%`,background:goalProgress>=100?G:`linear-gradient(90deg,${B},${C})`,transition:"width 0.4s ease"}}/>
+            <div className="goal-bar-track">
+              <div className="goal-bar-fill" style={{width:`${goalProgress}%`,background:goalProgress>=100?"var(--color-green)":`linear-gradient(90deg,var(--color-blue),var(--color-cyan))`,transition:"width 0.4s ease"}}/>
             </div>
           </div>
         )}
@@ -427,7 +488,7 @@ export default function App() {
         <main className="content-area">
           {view==="session"&&<SessionView capital={capital} setCapital={setCapital} final={final} setFinal={setFinal} note={note} setNote={setNote} preview={preview} last={last} onSave={handleSave} flash={flash} editId={editId} onCancelEdit={()=>{setEditId(null);setFinal("");setNote("");}} stats={{wins,losses,totalP,avgP,wr,best,worst,streak,sType}} onWithdraw={()=>setShowW(true)} onDeposit={()=>setShowD(true)} onSetInitial={()=>setShowIB(true)} onSetGoal={()=>setShowGoal(true)} initialBal={initialBal} goal={goal} goalProgress={goalProgress} currentBalance={currentBalance} recent7={recent7} recentTrend={recentTrend}/>}
           {view==="history"&&<HistoryView sessions={sessions} withdrawals={withdrawals} deposits={deposits} onDelete={handleDelete} onEdit={handleEdit} onDeleteWithdrawal={handleDeleteWithdrawal} onDeleteDeposit={handleDeleteDeposit}/>}
-          {view==="charts"&&<ChartsView chartData={chartData} sessions={sessions} stats={{totalP,avgP,wr,wins,losses,totalWithdrawn,totalDeposited,netProfit,currentBalance,goal,goalProgress}}/>}
+          {view==="charts"&&<ChartsView chartData={chartData} sessions={sessions} stats={{totalP,avgP,wr,wins,losses,totalWithdrawn,totalDeposited,netProfit,currentBalance,goal,goalProgress}} theme={theme}/>}
         </main>
 
         <nav className="mobile-nav">
@@ -441,7 +502,6 @@ export default function App() {
         </nav>
       </div>
     </div>
-    </>
   );
 }
 
@@ -451,7 +511,7 @@ const TABS=[
   {id:"charts",  label:"Gráficas", Icon:BarChart2},
 ];
 
-function AuthScreen({ onAuth }) {
+function AuthScreen({ onAuth, theme, toggleTheme }) {
   const [isSignUp,setIsSignUp]=useState(false);
   const [email,setEmail]=useState("");
   const [pass,setPass]=useState("");
@@ -465,12 +525,23 @@ function AuthScreen({ onAuth }) {
     setBusy(false);
   };
   return (
-    <div className="auth-shell">
+    <div className="auth-container">
+      <div className="auth-glow"/>
+      <button 
+        className="mh-action" 
+        onClick={toggleTheme} 
+        style={{position:"absolute",top:20,right:20,zIndex:10}} 
+        title="Cambiar tema"
+      >
+        {theme === "light" ? <Moon size={16}/> : <Sun size={16}/>}
+      </button>
       <div className="auth-card glass-card">
-        <div className="auth-logo"><div className="logo-mark-lg"><Activity size={22} strokeWidth={2.5}/></div></div>
-        <h1 className="auth-title">Draftea Tracker</h1>
-        <p className="auth-sub">{isSignUp?"Crea tu cuenta para empezar":"Inicia sesión para continuar"}</p>
-        <div className="auth-fields">
+        <div className="auth-logo-section">
+          <div className="auth-logo"><Activity size={24} strokeWidth={2.5}/></div>
+          <h1 className="auth-title">Draftea Tracker</h1>
+          <p className="auth-sub">{isSignUp?"Crea tu cuenta para empezar":"Inicia sesión para continuar"}</p>
+        </div>
+        <div className="auth-form">
           <div className="field-wrap">
             <label className="field-lbl"><Mail size={10}/> Correo electrónico</label>
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="tu@correo.com" className="num-input" onKeyDown={e=>e.key==="Enter"&&handle()}/>
@@ -483,8 +554,8 @@ function AuthScreen({ onAuth }) {
             </div>
           </div>
         </div>
-        {err&&<p className="auth-err"><X size={12}/>{err}</p>}
-        <button className="save-btn" onClick={handle} disabled={busy} style={{marginTop:8}}>
+        {err&&<p className="auth-err" style={{marginTop:12}}><X size={12}/>{err}</p>}
+        <button className="save-btn" onClick={handle} disabled={busy} style={{marginTop:20}}>
           {busy?<><div className="btn-spinner"/>{isSignUp?"Creando...":"Entrando..."}</>:<><User size={15}/>{isSignUp?"Crear cuenta":"Iniciar sesión"}</>}
         </button>
         <button className="auth-switch" onClick={()=>{setIsSignUp(!isSignUp);setErr("");}}>
@@ -678,8 +749,11 @@ function HistoryView({ sessions,withdrawals,deposits,onDelete,onEdit,onDeleteWit
   );
 }
 
-function ChartsView({ chartData,sessions,stats }) {
+function ChartsView({ chartData,sessions,stats,theme }) {
   const {totalP,avgP,wr,wins,losses,totalWithdrawn,totalDeposited,netProfit,currentBalance,goal,goalProgress}=stats;
+  const gridStroke = theme === "light" ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.04)";
+  const refLineStroke = theme === "light" ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.1)";
+
   if (sessions.length===0) return (
     <div className="view"><div className="glass-card empty-card"><BarChart2 size={32} color={MUTED} strokeWidth={1.5}/><p className="empty-title">Sin datos</p><p className="empty-sub">Necesitas al menos una sesión para ver gráficas.</p></div></div>
   );
@@ -695,13 +769,13 @@ function ChartsView({ chartData,sessions,stats }) {
       {goal!=null&&(
         <div className="glass-card" style={{padding:"16px 20px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}><Flag size={13} color={B} strokeWidth={2}/><p style={{fontSize:12,fontWeight:600,color:"#94a3b8"}}>Meta de bankroll</p></div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><Flag size={13} color={B} strokeWidth={2}/><p style={{fontSize:12,fontWeight:600,color:"var(--text-secondary)"}}>Meta de bankroll</p></div>
             <p style={{fontSize:14,fontWeight:700,color:goalProgress>=100?G:B,fontFamily:"'JetBrains Mono',monospace"}}>{goalProgress.toFixed(0)}%</p>
           </div>
           <div className="goal-bar-track"><div className="goal-bar-fill" style={{width:`${goalProgress}%`,background:goalProgress>=100?G:`linear-gradient(90deg,${B},${C})`}}/></div>
           <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
             <span style={{fontSize:10,color:MUTED,fontFamily:"'JetBrains Mono',monospace"}}>{MXN(currentBalance)}</span>
-            <span style={{fontSize:10,color:"#334155",fontFamily:"'JetBrains Mono',monospace"}}>{MXN(goal)}</span>
+            <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"'JetBrains Mono',monospace"}}>{MXN(goal)}</span>
           </div>
         </div>
       )}
@@ -710,11 +784,11 @@ function ChartsView({ chartData,sessions,stats }) {
         <ResponsiveContainer width="100%" height={220}>
           <LineChart data={chartData} margin={{top:8,right:8,left:0,bottom:0}}>
             <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={P}/><stop offset="50%" stopColor={B}/><stop offset="100%" stopColor={C}/></linearGradient></defs>
-            <CartesianGrid strokeDasharray="2 4" stroke="rgba(255,255,255,0.04)"/>
+            <CartesianGrid strokeDasharray="2 4" stroke={gridStroke}/>
             <XAxis dataKey="date" tick={{fill:MUTED,fontSize:10}} axisLine={false} tickLine={false}/>
             <YAxis tick={{fill:MUTED,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`$${v}`} width={58}/>
             <Tooltip content={<LineTooltip/>}/>
-            <ReferenceLine y={0} stroke="rgba(255,255,255,0.10)" strokeDasharray="3 3"/>
+            <ReferenceLine y={0} stroke={refLineStroke} strokeDasharray="3 3"/>
             <Line type="monotone" dataKey="acum" stroke="url(#lg)" strokeWidth={2.5} dot={{fill:P,r:3,strokeWidth:0}} activeDot={{r:5,fill:P,stroke:"rgba(168,85,247,0.3)",strokeWidth:4}}/>
           </LineChart>
         </ResponsiveContainer>
@@ -729,11 +803,11 @@ function ChartsView({ chartData,sessions,stats }) {
         </div>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={chartData} margin={{top:8,right:8,left:0,bottom:0}}>
-            <CartesianGrid strokeDasharray="2 4" stroke="rgba(255,255,255,0.04)"/>
+            <CartesianGrid strokeDasharray="2 4" stroke={gridStroke}/>
             <XAxis dataKey="date" tick={{fill:MUTED,fontSize:10}} axisLine={false} tickLine={false}/>
             <YAxis tick={{fill:MUTED,fontSize:10}} axisLine={false} tickLine={false} tickFormatter={v=>`$${v}`} width={58}/>
             <Tooltip content={<BarTooltip/>}/>
-            <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)"/>
+            <ReferenceLine y={0} stroke={refLineStroke}/>
             <Bar dataKey="profit" radius={[4,4,0,0]} maxBarSize={40}>
               {chartData.map((d)=><Cell key={d.id} fill={d.profit>=0?G:R} fillOpacity={0.8}/>)}
             </Bar>
@@ -799,187 +873,4 @@ function BarTooltip({ active,payload,label }) {
   return <div className="chart-tooltip"><p className="tt-label">{fullDate}</p><p className="tt-value" style={{color:pc(v)}}>{v>=0?"+":""}{MXN(v)}</p></div>;
 }
 
-const GLOBAL_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{-webkit-text-size-adjust:100%}
-body{background:#07090f;color:#f8fafc;font-family:'Inter',system-ui,sans-serif;overflow-x:hidden}
-.mesh-bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-.mesh-orb{position:absolute;border-radius:50%;filter:blur(90px);animation:float 20s ease-in-out infinite alternate}
-.mesh-orb-1{width:600px;height:600px;top:-200px;left:-150px;background:radial-gradient(ellipse,rgba(168,85,247,0.35),transparent 65%);animation-duration:22s}
-.mesh-orb-2{width:500px;height:500px;bottom:-150px;right:-100px;background:radial-gradient(ellipse,rgba(59,130,246,0.3),transparent 65%);animation-duration:18s;animation-delay:-8s}
-.mesh-orb-3{width:400px;height:400px;top:40%;left:35%;background:radial-gradient(ellipse,rgba(6,182,212,0.2),transparent 65%);animation-duration:26s;animation-delay:-14s}
-@keyframes float{0%{transform:translate(0,0) scale(1)}100%{transform:translate(40px,60px) scale(1.08)}}
-.sync-bar{position:fixed;top:0;left:0;right:0;height:2px;z-index:200;background:linear-gradient(90deg,#a855f7,#3b82f6,#06b6d4);animation:syncSlide 1.2s ease-in-out infinite alternate}
-@keyframes syncSlide{0%{transform:translateX(-30%)}100%{transform:translateX(30%)}}
-.layout{position:relative;z-index:1;display:flex;min-height:100vh}
-.sidebar{display:none;width:240px;flex-shrink:0;position:fixed;top:0;left:0;bottom:0;z-index:40;padding:24px 16px;flex-direction:column;gap:8px;background:rgba(7,9,15,0.65);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);border-right:1px solid rgba(255,255,255,0.07);overflow-y:auto}
-@media(min-width:768px){.sidebar{display:flex}}
-.sidebar-logo{display:flex;align-items:center;gap:10px;padding:4px 8px 24px}
-.logo-mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4);display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0}
-.logo-text{font-size:16px;font-weight:800;letter-spacing:-0.5px;color:#f8fafc}
-.sidebar-nav{display:flex;flex-direction:column;gap:4px;flex:1}
-.snav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border:none;background:transparent;color:#64748b;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;border-radius:10px;transition:background 0.15s,color 0.15s;text-align:left;position:relative}
-.snav-item:hover{background:rgba(255,255,255,0.05);color:#94a3b8}
-.snav-active{background:rgba(168,85,247,0.12)!important;color:#f8fafc!important}
-.snav-active svg{color:#a855f7}
-.snav-badge{margin-left:auto;background:rgba(168,85,247,0.25);color:#c084fc;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:700}
-.sidebar-footer{margin-top:auto;display:flex;flex-direction:column;gap:8px}
-.sidebar-balance{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
-.bal-row{display:flex;justify-content:space-between;align-items:center}
-.bal-row-total{border-top:1px solid rgba(255,255,255,0.07);padding-top:8px;margin-top:2px}
-.bal-label{font-size:11px;color:#475569}
-.bal-val{font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace}
-.sidebar-goal{background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:12px;padding:12px 14px}
-.goal-bar-track{height:6px;background:rgba(255,255,255,0.07);border-radius:999px;overflow:hidden}
-.goal-bar-fill{height:100%;border-radius:999px;transition:width 0.5s ease}
-.goal-mobile-bar{background:rgba(7,9,15,0.4);border-bottom:1px solid rgba(255,255,255,0.05);padding:8px 0 0}
-@media(min-width:768px){.goal-mobile-bar{display:none}}
-.action-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);border-radius:9px;color:#94a3b8;font-family:inherit;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s}
-.action-btn:hover{background:rgba(168,85,247,0.1);color:#c084fc;border-color:rgba(168,85,247,0.25)}
-.action-btn.danger:hover{background:rgba(251,113,133,0.1);color:#fb7185;border-color:rgba(251,113,133,0.25)}
-.logout-btn{display:flex;align-items:center;gap:7px;padding:8px 12px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.04);border-radius:10px;color:#475569;font-family:inherit;font-size:12px;cursor:pointer;transition:all 0.15s;font-weight:500}
-.logout-btn:hover{background:rgba(251,113,133,0.08);color:#fb7185;border-color:rgba(251,113,133,0.2)}
-.main-wrap{flex:1;display:flex;flex-direction:column;min-height:100vh}
-@media(min-width:768px){.main-wrap{margin-left:240px}}
-.mobile-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:rgba(7,9,15,0.7);backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);border-bottom:1px solid rgba(255,255,255,0.07);position:sticky;top:0;z-index:30}
-@media(min-width:768px){.mobile-header{display:none}}
-.mh-logo{display:flex;align-items:center;gap:8px}
-.logo-mark-sm{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4);display:flex;align-items:center;justify-content:center;color:#fff}
-.mh-title{font-size:16px;font-weight:800;letter-spacing:-0.4px}
-.mh-action{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 8px;color:#64748b;cursor:pointer;display:flex;align-items:center;transition:all 0.15s}
-.mh-action:hover{color:#c084fc;border-color:rgba(168,85,247,0.3)}
-.mh-action.red:hover{color:#fb7185;border-color:rgba(251,113,133,0.3)}
-.mh-action.green:hover{color:#34d399;border-color:rgba(52,211,153,0.3)}
-.mh-logout{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 8px;color:#64748b;cursor:pointer;display:flex;align-items:center;transition:all 0.15s}
-.mh-logout:hover{color:#fb7185}
-.balance-bar{display:flex;gap:0;border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(7,9,15,0.5);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);overflow-x:auto}
-@media(min-width:768px){.balance-bar{display:none}}
-.bal-pill{flex:1;min-width:80px;display:flex;flex-direction:column;align-items:center;padding:10px 8px;border-right:1px solid rgba(255,255,255,0.05)}
-.bal-pill:last-child{border-right:none}
-.bal-pill-label{font-size:9px;color:#475569;letter-spacing:1px;text-transform:uppercase;margin-bottom:3px}
-.bal-pill-val{font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace}
-.content-area{flex:1;padding-bottom:80px}
-@media(min-width:768px){.content-area{padding-bottom:40px}}
-.view{max-width:680px;margin:0 auto;padding:20px 16px;display:flex;flex-direction:column;gap:14px}
-@media(min-width:640px){.view{padding:28px 24px}}
-@media(min-width:1024px){.view{padding:32px 32px}}
-.glass-card{background:rgba(255,255,255,0.05);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border:1px solid rgba(255,255,255,0.09);border-radius:18px;padding:20px}
-@media(min-width:640px){.glass-card{border-radius:22px;padding:24px}}
-.result-hero{transition:border-color 0.3s}
-.rh-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
-.rh-amount{font-size:28px;font-weight:800;letter-spacing:-1.5px;font-family:'JetBrains Mono',monospace;margin:4px 0 2px}
-@media(min-width:640px){.rh-amount{font-size:36px}}
-.rh-pct{font-size:14px;font-weight:600;font-family:'JetBrains Mono',monospace}
-.rh-icon-wrap{width:46px;height:46px;border-radius:14px;border:1px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.rh-caption{font-size:11px;color:#475569;font-family:'JetBrains Mono',monospace;margin-top:8px}
-.goal-card{cursor:pointer;transition:border-color 0.2s}
-.goal-card:hover{border-color:rgba(59,130,246,0.3)}
-.trend-card{}
-.quick-actions{display:flex;gap:8px;flex-wrap:wrap}
-.qa-btn{flex:1;min-width:calc(50% - 4px);display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 12px;background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.2);border-radius:12px;color:#c084fc;font-family:inherit;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s}
-.qa-btn:hover{background:rgba(168,85,247,0.15)}
-.qa-blue{background:rgba(59,130,246,0.08);border-color:rgba(59,130,246,0.2);color:#60a5fa}
-.qa-blue:hover{background:rgba(59,130,246,0.15)}
-.qa-green{background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2);color:#34d399}
-.qa-green:hover{background:rgba(52,211,153,0.15)}
-.qa-red{background:rgba(251,113,133,0.08);border-color:rgba(251,113,133,0.2);color:#fb7185}
-.qa-red:hover{background:rgba(251,113,133,0.15)}
-.input-card-wrap{position:relative}
-.mesh-card-glow{position:absolute;inset:-1px;border-radius:23px;background:linear-gradient(135deg,rgba(168,85,247,0.4),rgba(59,130,246,0.3),rgba(6,182,212,0.2));filter:blur(18px);opacity:0.5;z-index:-1;animation:glowPulse 4s ease-in-out infinite alternate}
-@keyframes glowPulse{0%{opacity:0.35;transform:scale(0.98)}100%{opacity:0.55;transform:scale(1.01)}}
-.input-card{position:relative;z-index:1}
-.ic-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-.cancel-btn{display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:5px 10px;color:#94a3b8;font-family:inherit;font-size:12px;cursor:pointer;font-weight:500}
-.fields-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
-@media(max-width:380px){.fields-row{grid-template-columns:1fr}}
-.field-wrap{display:flex;flex-direction:column;gap:4px}
-.field-lbl{display:flex;align-items:center;gap:5px;font-size:10px;color:#64748b;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-bottom:2px}
-.field-hint{font-size:10px;color:#334155;margin-top:-2px;margin-bottom:2px}
-.num-input,.text-input{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:11px;padding:11px 13px;color:#f8fafc;font-family:'JetBrains Mono',monospace;font-size:15px;outline:none;width:100%;transition:border-color 0.2s,box-shadow 0.2s;-webkit-appearance:none}
-.num-input:focus,.text-input:focus{border-color:rgba(168,85,247,0.6);box-shadow:0 0 0 3px rgba(168,85,247,0.12)}
-.num-input::placeholder,.text-input::placeholder{color:#1e293b;font-family:'Inter',sans-serif}
-.text-input{font-family:'Inter',sans-serif;font-size:14px}
-.note-field{margin-bottom:16px;margin-top:2px}
-.preview-pill{display:flex;justify-content:space-between;align-items:center;border:1px solid;border-radius:11px;padding:11px 14px;margin-bottom:14px;flex-wrap:wrap;gap:8px}
-.preview-label{font-size:12px;color:#64748b;font-weight:500}
-.preview-val{font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace}
-.preview-pct{font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace}
-.save-btn{width:100%;background:linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4);border:none;border-radius:12px;padding:14px;color:#fff;font-family:'Inter',sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity 0.15s,transform 0.1s,background 0.3s}
-.save-btn:hover{opacity:0.88}
-.save-btn:active{transform:scale(0.98)}
-.save-btn:disabled{opacity:0.5;cursor:not-allowed}
-.btn-spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite;flex-shrink:0}
-@keyframes spin{to{transform:rotate(360deg)}}
-.section-eyebrow{font-size:10px;font-weight:600;color:#334155;letter-spacing:2.5px;text-transform:uppercase;padding:0 2px}
-.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-@media(min-width:640px){.stats-grid{grid-template-columns:repeat(3,1fr)}}
-.stat-card{padding:14px!important;display:flex;flex-direction:column;gap:6px}
-.sc-icon{width:30px;height:30px;border-radius:8px;border:1px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.sc-label{font-size:10px;color:#475569;letter-spacing:1.2px;text-transform:uppercase;font-weight:500;margin-top:2px}
-.sc-value{font-size:17px;font-weight:700;font-family:'JetBrains Mono',monospace}
-.sc-sub{font-size:10px;color:#334155;font-family:'JetBrains Mono',monospace}
-.history-tabs{display:flex;gap:6px;margin-bottom:4px}
-.htab{display:flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);border-radius:10px;color:#64748b;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:all 0.15s}
-.htab-active{background:rgba(168,85,247,0.1);border-color:rgba(168,85,247,0.25);color:#c084fc}
-.history-row{display:flex;align-items:flex-start;gap:14px;transition:border-color 0.2s}
-.hr-icon{width:42px;height:42px;border-radius:12px;border:1px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.hr-body{flex:1;min-width:0}
-.hr-amount{font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;margin:3px 0;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.hr-pct{font-size:12px;font-weight:500;font-family:'JetBrains Mono',monospace}
-.hr-flow{font-size:11px;color:#475569;font-family:'JetBrains Mono',monospace;margin-top:2px}
-.hr-note{font-size:11px;color:#475569;font-style:italic;margin-top:5px}
-.hr-actions{display:flex;gap:6px;flex-shrink:0;padding-top:2px}
-.icon-btn{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:7px 9px;cursor:pointer;color:#64748b;display:flex;align-items:center;justify-content:center;transition:background 0.15s,color 0.15s}
-.icon-btn:hover{background:rgba(255,255,255,0.08);color:#94a3b8}
-.icon-btn.danger:hover{background:rgba(251,113,133,0.12);color:#fb7185;border-color:rgba(251,113,133,0.25)}
-.empty-card{text-align:center;padding:52px 24px!important;display:flex;flex-direction:column;align-items:center;gap:12px}
-.empty-title{font-size:16px;font-weight:600;color:#94a3b8}
-.empty-sub{font-size:13px;color:#475569;max-width:240px}
-.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.kpi-row-2{grid-template-columns:repeat(2,1fr)}
-@media(min-width:500px){.kpi-row-2{grid-template-columns:repeat(4,1fr)}}
-.kpi-pill{text-align:center;padding:14px 10px!important}
-.kpi-label{font-size:10px;color:#64748b;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px}
-.kpi-value{font-size:14px;font-weight:700;font-family:'JetBrains Mono',monospace}
-.chart-card{padding:20px!important}
-@media(min-width:640px){.chart-card{padding:24px!important}}
-.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}
-.chart-title{font-size:13px;font-weight:600;color:#94a3b8}
-.chart-dot{width:8px;height:8px;border-radius:50%}
-.legend-item{font-size:10px;font-weight:500;display:flex;align-items:center;gap:5px}
-.legend-dot{width:7px;height:7px;border-radius:50%}
-.chart-tooltip{background:rgba(7,9,15,0.9);border:1px solid rgba(255,255,255,0.1);border-radius:11px;padding:10px 14px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
-.tt-label{font-size:10px;color:#64748b;margin-bottom:4px}
-.tt-value{font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace}
-.mobile-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:40;background:rgba(7,9,15,0.85);backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);border-top:1px solid rgba(255,255,255,0.07);padding-bottom:env(safe-area-inset-bottom,0)}
-@media(min-width:768px){.mobile-nav{display:none}}
-.mnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 0 8px;border:none;background:transparent;color:#475569;font-family:inherit;cursor:pointer;position:relative;transition:color 0.15s}
-.mnav-active{color:#a855f7}
-.mnav-lbl{font-size:10px;font-weight:600;letter-spacing:0.5px}
-.mnav-dot{position:absolute;top:8px;right:calc(50% - 16px);width:5px;height:5px;border-radius:50%;background:#a855f7}
-.label-xs{font-size:10px;color:#64748b;letter-spacing:2px;text-transform:uppercase;font-weight:500}
-.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:300;background:rgba(7,9,15,0.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid;border-radius:999px;padding:9px 18px;font-size:13px;font-weight:500;color:#f8fafc;display:flex;align-items:center;gap:7px;animation:toastIn 0.25s ease;white-space:nowrap;max-width:90vw}
-@keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(-8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
-.modal-overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn 0.2s ease}
-@keyframes fadeIn{from{opacity:0}to{opacity:1}}
-.modal-card{width:100%;max-width:400px;animation:slideUp 0.25s ease}
-@keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-.modal-header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
-.modal-icon{width:42px;height:42px;border-radius:12px;border:1px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.modal-title{font-size:15px;font-weight:700;color:#f8fafc}
-.modal-sub{font-size:12px;color:#64748b;margin-top:2px}
-.modal-close{margin-left:auto;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px;color:#64748b;cursor:pointer;display:flex;align-items:center}
-.auth-shell{position:relative;z-index:1;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.auth-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:0}
-.auth-logo{display:flex;justify-content:center;margin-bottom:20px}
-.logo-mark-lg{width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,#a855f7,#3b82f6,#06b6d4);display:flex;align-items:center;justify-content:center;color:#fff}
-.auth-title{font-size:24px;font-weight:800;letter-spacing:-0.8px;text-align:center;margin-bottom:6px}
-.auth-sub{font-size:13px;color:#64748b;text-align:center;margin-bottom:28px}
-.auth-fields{display:flex;flex-direction:column;gap:14px;margin-bottom:16px}
-.pass-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:#475569;cursor:pointer;display:flex;align-items:center;padding:2px}
-.auth-err{display:flex;align-items:center;gap:6px;font-size:12px;color:#fb7185;background:rgba(251,113,133,0.08);border:1px solid rgba(251,113,133,0.2);border-radius:8px;padding:9px 12px;margin-bottom:4px}
-.auth-switch{background:none;border:none;color:#64748b;font-family:inherit;font-size:12px;cursor:pointer;margin-top:14px;text-align:center;text-decoration:underline;text-underline-offset:3px}
-.auth-switch:hover{color:#94a3b8}
-@media(prefers-reduced-motion:reduce){.mesh-orb,.mesh-card-glow,.sync-bar{animation:none}}
-`;
+// Styles migrated to src/index.css
